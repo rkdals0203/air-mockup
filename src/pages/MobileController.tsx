@@ -13,6 +13,10 @@ const MobileController = () => {
   const initialOrientation = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
   const throttleRef = useRef<number>(0);
 
+  // alpha(0~360)의 불연속 점프를 방지하기 위한 연속 각도 추적
+  const prevAlpha = useRef<number | null>(null);
+  const continuousAlpha = useRef(0);
+
   const handleOrientation = useCallback(
     (e: DeviceOrientationEvent) => {
       if (!sessionCode || !isActive) return;
@@ -25,14 +29,26 @@ const MobileController = () => {
       const beta = e.beta ?? 0;
       const gamma = e.gamma ?? 0;
 
+      // alpha 연속 추적: 359→1 같은 점프를 delta로 처리
+      if (prevAlpha.current !== null) {
+        let delta = alpha - prevAlpha.current;
+        if (delta > 180) delta -= 360;
+        if (delta < -180) delta += 360;
+        continuousAlpha.current += delta;
+      } else {
+        continuousAlpha.current = alpha;
+      }
+      prevAlpha.current = alpha;
+
       if (!initialOrientation.current) {
-        initialOrientation.current = { alpha, beta, gamma };
+        initialOrientation.current = { alpha: continuousAlpha.current, beta, gamma };
       }
 
       const ref = initialOrientation.current;
-      const rx = ((beta - ref.beta) * Math.PI) / 180;
-      const ry = ((gamma - ref.gamma) * Math.PI) / 180;
-      const rz = ((alpha - ref.alpha) * Math.PI) / 180;
+      // 범위를 제한해서 과도한 회전 방지
+      const rx = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, ((beta - ref.beta) * Math.PI) / 180));
+      const ry = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, ((gamma - ref.gamma) * Math.PI) / 180));
+      const rz = Math.max(-Math.PI, Math.min(Math.PI, ((continuousAlpha.current - ref.alpha) * Math.PI) / 180));
 
       setRotation({ x: rx, y: ry, z: rz });
       updateSessionRotation(sessionCode, { x: rx, y: ry, z: rz });
@@ -121,6 +137,8 @@ const MobileController = () => {
             variant="outline"
             onClick={() => {
               initialOrientation.current = null;
+              prevAlpha.current = null;
+              continuousAlpha.current = 0;
             }}
           >
             원점 리셋
