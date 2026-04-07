@@ -30,9 +30,10 @@ const PhonePlaceholder = ({ rotation, imageUrl, isConnected }: PhonePlaceholderP
   // Apply rotation from sliders
   useFrame(() => {
     if (groupRef.current) {
-      groupRef.current.rotation.x = THREE.MathUtils.lerp(groupRef.current.rotation.x, rotation[0], 0.15);
-      groupRef.current.rotation.y = THREE.MathUtils.lerp(groupRef.current.rotation.y, rotation[1], 0.15);
-      groupRef.current.rotation.z = THREE.MathUtils.lerp(groupRef.current.rotation.z, rotation[2], 0.15);
+      const t = isConnected ? 0.5 : 0.1; // 모바일 연결 시 빠르게 추종, 슬라이더는 부드럽게
+      groupRef.current.rotation.x = THREE.MathUtils.lerp(groupRef.current.rotation.x, rotation[0], t);
+      groupRef.current.rotation.y = THREE.MathUtils.lerp(groupRef.current.rotation.y, rotation[1], t);
+      groupRef.current.rotation.z = THREE.MathUtils.lerp(groupRef.current.rotation.z, rotation[2], t);
     }
   });
 

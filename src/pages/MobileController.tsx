@@ -4,18 +4,7 @@ import { useMobileBroadcast } from "@/hooks/useSession";
 import { Smartphone, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-// 간단한 로우패스 필터로 센서 노이즈 제거
-function lowPass(prev: number, next: number, factor: number): number {
-  return prev + factor * (next - prev);
-}
-
-// 각도 차이를 -180~180 범위로 정규화
-function angleDelta(from: number, to: number): number {
-  let d = to - from;
-  if (d > 180) d -= 360;
-  if (d < -180) d += 360;
-  return d;
-}
+const DEG2RAD = Math.PI / 180;
 
 const MobileController = () => {
   const [searchParams] = useSearchParams();
@@ -25,56 +14,41 @@ const MobileController = () => {
   const [error, setError] = useState<string | null>(null);
   const [rotation, setRotation] = useState({ x: 0, y: 0, z: 0 });
 
-  const initialOrientation = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
-  const prevRaw = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
-  const continuous = useRef({ alpha: 0, beta: 0, gamma: 0 });
-  const smoothed = useRef({ x: 0, y: 0, z: 0 });
-  const rafRef = useRef<number>(0);
+  const initRef = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
+  // alpha(0~360)만 연속 추적 필요
+  const prevAlpha = useRef<number | null>(null);
+  const contAlpha = useRef(0);
 
   const handleOrientation = useCallback(
     (e: DeviceOrientationEvent) => {
       if (!sessionCode || !isActive) return;
 
       const alpha = e.alpha ?? 0;
-      const beta = e.beta ?? 0;
-      const gamma = e.gamma ?? 0;
+      const beta = e.beta ?? 0;   // -180 ~ 180, 연속
+      const gamma = e.gamma ?? 0; // -90 ~ 90, 연속
 
-      // 연속 각도 추적 (모든 축에 대해 점프 방지)
-      if (prevRaw.current !== null) {
-        continuous.current.alpha += angleDelta(prevRaw.current.alpha, alpha);
-        continuous.current.beta += angleDelta(prevRaw.current.beta, beta);
-        continuous.current.gamma += angleDelta(prevRaw.current.gamma, gamma);
+      // alpha만 래핑 처리 (0→360 점프 방지)
+      if (prevAlpha.current !== null) {
+        let d = alpha - prevAlpha.current;
+        if (d > 180) d -= 360;
+        if (d < -180) d += 360;
+        contAlpha.current += d;
       } else {
-        continuous.current = { alpha, beta, gamma };
+        contAlpha.current = alpha;
       }
-      prevRaw.current = { alpha, beta, gamma };
+      prevAlpha.current = alpha;
 
-      if (!initialOrientation.current) {
-        initialOrientation.current = { ...continuous.current };
+      if (!initRef.current) {
+        initRef.current = { alpha: contAlpha.current, beta, gamma };
       }
 
-      const ref = initialOrientation.current;
-      const rawX = ((continuous.current.beta - ref.beta) * Math.PI) / 180;
-      const rawY = ((continuous.current.gamma - ref.gamma) * Math.PI) / 180;
-      const rawZ = ((continuous.current.alpha - ref.alpha) * Math.PI) / 180;
-
-      // 로우패스 필터 적용 (0.3 = 부드러움 정도, 낮을수록 부드러움)
-      const LP = 0.3;
-      smoothed.current.x = lowPass(smoothed.current.x, rawX, LP);
-      smoothed.current.y = lowPass(smoothed.current.y, rawY, LP);
-      smoothed.current.z = lowPass(smoothed.current.z, rawZ, LP);
-
-      const x = smoothed.current.x;
-      const y = smoothed.current.y;
-      const z = smoothed.current.z;
+      const ref = initRef.current;
+      const x = (beta - ref.beta) * DEG2RAD;
+      const y = (gamma - ref.gamma) * DEG2RAD;
+      const z = (contAlpha.current - ref.alpha) * DEG2RAD;
 
       setRotation({ x, y, z });
-
-      // requestAnimationFrame으로 전송 빈도 제어
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = requestAnimationFrame(() => {
-        sendRotation({ x, y, z });
-      });
+      sendRotation({ x, y, z });
     },
     [sessionCode, isActive, sendRotation]
   );
@@ -99,10 +73,9 @@ const MobileController = () => {
   };
 
   const resetOrientation = () => {
-    initialOrientation.current = null;
-    prevRaw.current = null;
-    continuous.current = { alpha: 0, beta: 0, gamma: 0 };
-    smoothed.current = { x: 0, y: 0, z: 0 };
+    initRef.current = null;
+    prevAlpha.current = null;
+    contAlpha.current = 0;
   };
 
   useEffect(() => {
@@ -136,9 +109,7 @@ const MobileController = () => {
         </p>
       </div>
 
-      {error && (
-        <p className="text-sm text-destructive">{error}</p>
-      )}
+      {error && <p className="text-sm text-destructive">{error}</p>}
 
       {!isActive ? (
         <Button onClick={startGyro} size="lg" className="gap-2">
