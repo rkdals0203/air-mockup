@@ -9,86 +9,63 @@ function generateCode(): string {
 }
 
 export function useSession() {
-  const [sessionCode, setSessionCode] = useState<string | null>(null);
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [sessionCode] = useState(() => generateCode());
   const [isConnected, setIsConnected] = useState(false);
   const [remoteRotation, setRemoteRotation] = useState<[number, number, number]>([0, 0, 0]);
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Create session on mount
   useEffect(() => {
-    const code = generateCode();
-    supabase
-      .from("mockup_sessions")
-      .insert({ session_code: code })
-      .select()
-      .single()
-      .then(({ data, error }) => {
-        if (error) {
-          console.error("Failed to create session:", error);
-          return;
-        }
-        setSessionCode(data.session_code);
-        setSessionId(data.id);
-      });
+    const channel = supabase.channel(`session-${sessionCode}`);
 
-    return () => {
-      // Cleanup session on unmount
-      if (channelRef.current) supabase.removeChannel(channelRef.current);
-    };
-  }, []);
+    channel
+      .on("broadcast", { event: "rotation" }, ({ payload }) => {
+        setRemoteRotation([payload.x, payload.y, payload.z]);
+        setIsConnected(true);
 
-  // Subscribe to realtime changes
-  useEffect(() => {
-    if (!sessionId) return;
-
-    const channel = supabase
-      .channel(`session-${sessionId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "mockup_sessions",
-          filter: `id=eq.${sessionId}`,
-        },
-        (payload) => {
-          const row = payload.new as any;
-          setIsConnected(row.is_connected);
-          setRemoteRotation([row.rotation_x, row.rotation_y, row.rotation_z]);
-        }
-      )
+        // 2초간 데이터가 안 오면 연결 해제로 간주
+        if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        timeoutRef.current = setTimeout(() => setIsConnected(false), 2000);
+      })
       .subscribe();
 
     channelRef.current = channel;
 
     return () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
       supabase.removeChannel(channel);
     };
-  }, [sessionId]);
+  }, [sessionCode]);
 
-  return { sessionCode, sessionId, isConnected, remoteRotation };
+  return { sessionCode, isConnected, remoteRotation };
 }
 
-/** Used by the mobile page to update rotation */
-export async function updateSessionRotation(
-  sessionCode: string,
-  rotation: { x: number; y: number; z: number }
-) {
-  await supabase
-    .from("mockup_sessions")
-    .update({
-      rotation_x: rotation.x,
-      rotation_y: rotation.y,
-      rotation_z: rotation.z,
-      is_connected: true,
-    })
-    .eq("session_code", sessionCode);
-}
+/** Used by the mobile page to send rotation via broadcast */
+export function useMobileBroadcast(sessionCode: string | null) {
+  const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
-export async function disconnectSession(sessionCode: string) {
-  await supabase
-    .from("mockup_sessions")
-    .update({ is_connected: false })
-    .eq("session_code", sessionCode);
+  useEffect(() => {
+    if (!sessionCode) return;
+
+    const channel = supabase.channel(`session-${sessionCode}`);
+    channel.subscribe();
+    channelRef.current = channel;
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [sessionCode]);
+
+  const sendRotation = useCallback(
+    (rotation: { x: number; y: number; z: number }) => {
+      channelRef.current?.send({
+        type: "broadcast",
+        event: "rotation",
+        payload: rotation,
+      });
+    },
+    []
+  );
+
+  return { sendRotation };
 }

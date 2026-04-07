@@ -1,63 +1,85 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
-import { updateSessionRotation, disconnectSession } from "@/hooks/useSession";
+import { useMobileBroadcast } from "@/hooks/useSession";
 import { Smartphone, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+
+// 간단한 로우패스 필터로 센서 노이즈 제거
+function lowPass(prev: number, next: number, factor: number): number {
+  return prev + factor * (next - prev);
+}
+
+// 각도 차이를 -180~180 범위로 정규화
+function angleDelta(from: number, to: number): number {
+  let d = to - from;
+  if (d > 180) d -= 360;
+  if (d < -180) d += 360;
+  return d;
+}
 
 const MobileController = () => {
   const [searchParams] = useSearchParams();
   const sessionCode = searchParams.get("code");
+  const { sendRotation } = useMobileBroadcast(sessionCode);
   const [isActive, setIsActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [rotation, setRotation] = useState({ x: 0, y: 0, z: 0 });
-  const initialOrientation = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
-  const throttleRef = useRef<number>(0);
 
-  // alpha(0~360)의 불연속 점프를 방지하기 위한 연속 각도 추적
-  const prevAlpha = useRef<number | null>(null);
-  const continuousAlpha = useRef(0);
+  const initialOrientation = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
+  const prevRaw = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
+  const continuous = useRef({ alpha: 0, beta: 0, gamma: 0 });
+  const smoothed = useRef({ x: 0, y: 0, z: 0 });
+  const rafRef = useRef<number>(0);
 
   const handleOrientation = useCallback(
     (e: DeviceOrientationEvent) => {
       if (!sessionCode || !isActive) return;
 
-      const now = Date.now();
-      if (now - throttleRef.current < 50) return; // 20fps throttle
-      throttleRef.current = now;
-
       const alpha = e.alpha ?? 0;
       const beta = e.beta ?? 0;
       const gamma = e.gamma ?? 0;
 
-      // alpha 연속 추적: 359→1 같은 점프를 delta로 처리
-      if (prevAlpha.current !== null) {
-        let delta = alpha - prevAlpha.current;
-        if (delta > 180) delta -= 360;
-        if (delta < -180) delta += 360;
-        continuousAlpha.current += delta;
+      // 연속 각도 추적 (모든 축에 대해 점프 방지)
+      if (prevRaw.current !== null) {
+        continuous.current.alpha += angleDelta(prevRaw.current.alpha, alpha);
+        continuous.current.beta += angleDelta(prevRaw.current.beta, beta);
+        continuous.current.gamma += angleDelta(prevRaw.current.gamma, gamma);
       } else {
-        continuousAlpha.current = alpha;
+        continuous.current = { alpha, beta, gamma };
       }
-      prevAlpha.current = alpha;
+      prevRaw.current = { alpha, beta, gamma };
 
       if (!initialOrientation.current) {
-        initialOrientation.current = { alpha: continuousAlpha.current, beta, gamma };
+        initialOrientation.current = { ...continuous.current };
       }
 
       const ref = initialOrientation.current;
-      // 범위를 제한해서 과도한 회전 방지
-      const rx = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, ((beta - ref.beta) * Math.PI) / 180));
-      const ry = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, ((gamma - ref.gamma) * Math.PI) / 180));
-      const rz = Math.max(-Math.PI, Math.min(Math.PI, ((continuousAlpha.current - ref.alpha) * Math.PI) / 180));
+      const rawX = ((continuous.current.beta - ref.beta) * Math.PI) / 180;
+      const rawY = ((continuous.current.gamma - ref.gamma) * Math.PI) / 180;
+      const rawZ = ((continuous.current.alpha - ref.alpha) * Math.PI) / 180;
 
-      setRotation({ x: rx, y: ry, z: rz });
-      updateSessionRotation(sessionCode, { x: rx, y: ry, z: rz });
+      // 로우패스 필터 적용 (0.3 = 부드러움 정도, 낮을수록 부드러움)
+      const LP = 0.3;
+      smoothed.current.x = lowPass(smoothed.current.x, rawX, LP);
+      smoothed.current.y = lowPass(smoothed.current.y, rawY, LP);
+      smoothed.current.z = lowPass(smoothed.current.z, rawZ, LP);
+
+      const x = smoothed.current.x;
+      const y = smoothed.current.y;
+      const z = smoothed.current.z;
+
+      setRotation({ x, y, z });
+
+      // requestAnimationFrame으로 전송 빈도 제어
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = requestAnimationFrame(() => {
+        sendRotation({ x, y, z });
+      });
     },
-    [sessionCode, isActive]
+    [sessionCode, isActive, sendRotation]
   );
 
   const startGyro = async () => {
-    // iOS requires permission
     if (
       typeof (DeviceOrientationEvent as any).requestPermission === "function"
     ) {
@@ -72,8 +94,15 @@ const MobileController = () => {
         return;
       }
     }
-    initialOrientation.current = null;
+    resetOrientation();
     setIsActive(true);
+  };
+
+  const resetOrientation = () => {
+    initialOrientation.current = null;
+    prevRaw.current = null;
+    continuous.current = { alpha: 0, beta: 0, gamma: 0 };
+    smoothed.current = { x: 0, y: 0, z: 0 };
   };
 
   useEffect(() => {
@@ -82,13 +111,6 @@ const MobileController = () => {
       return () => window.removeEventListener("deviceorientation", handleOrientation);
     }
   }, [isActive, handleOrientation]);
-
-  // Disconnect on unmount
-  useEffect(() => {
-    return () => {
-      if (sessionCode) disconnectSession(sessionCode);
-    };
-  }, [sessionCode]);
 
   if (!sessionCode) {
     return (
@@ -126,21 +148,14 @@ const MobileController = () => {
       ) : (
         <div className="space-y-4 text-center">
           <div className="bg-primary/20 text-primary px-4 py-2 rounded-full text-sm font-medium">
-            🟢 연결됨 — 폰을 움직여 보세요
+            연결됨 — 폰을 움직여 보세요
           </div>
           <div className="grid grid-cols-3 gap-3 text-xs text-muted-foreground font-mono">
             <div>X: {rotation.x.toFixed(2)}</div>
             <div>Y: {rotation.y.toFixed(2)}</div>
             <div>Z: {rotation.z.toFixed(2)}</div>
           </div>
-          <Button
-            variant="outline"
-            onClick={() => {
-              initialOrientation.current = null;
-              prevAlpha.current = null;
-              continuousAlpha.current = 0;
-            }}
-          >
+          <Button variant="outline" onClick={resetOrientation}>
             원점 리셋
           </Button>
         </div>
