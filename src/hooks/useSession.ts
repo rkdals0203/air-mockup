@@ -11,7 +11,7 @@ function generateCode(): string {
 export function useSession() {
   const [sessionCode] = useState(() => generateCode());
   const [isConnected, setIsConnected] = useState(false);
-  const [remoteRotation, setRemoteRotation] = useState<[number, number, number]>([0, 0, 0]);
+  const [remoteRotation, setRemoteRotation] = useState<{ x: number; y: number; z: number; w: number }>({ x: 0, y: 0, z: 0, w: 1 });
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -20,7 +20,7 @@ export function useSession() {
 
     channel
       .on("broadcast", { event: "rotation" }, ({ payload }) => {
-        setRemoteRotation([payload.x, payload.y, payload.z]);
+        setRemoteRotation({ x: payload.x, y: payload.y, z: payload.z, w: payload.w });
         setIsConnected(true);
 
         // 2초간 데이터가 안 오면 연결 해제로 간주

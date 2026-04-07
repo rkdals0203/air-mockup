@@ -6,49 +6,78 @@ import { Button } from "@/components/ui/button";
 
 const DEG2RAD = Math.PI / 180;
 
+/**
+ * DeviceOrientation의 alpha/beta/gamma를 쿼터니언(x,y,z,w)으로 변환
+ * W3C spec 기준: ZXY 순서 회전
+ */
+function orientationToQuaternion(alpha: number, beta: number, gamma: number) {
+  const a = alpha * DEG2RAD;
+  const b = beta * DEG2RAD;
+  const g = gamma * DEG2RAD;
+
+  // ZXY 순서 오일러 → 쿼터니언
+  const cx = Math.cos(b / 2);
+  const sx = Math.sin(b / 2);
+  const cy = Math.cos(g / 2);
+  const sy = Math.sin(g / 2);
+  const cz = Math.cos(a / 2);
+  const sz = Math.sin(a / 2);
+
+  return {
+    x: sx * cy * cz - cx * sy * sz,
+    y: cx * sy * cz + sx * cy * sz,
+    z: cx * cy * sz + sx * sy * cz,
+    w: cx * cy * cz - sx * sy * sz,
+  };
+}
+
+/** 쿼터니언 켤레(역회전) */
+function quatConjugate(q: { x: number; y: number; z: number; w: number }) {
+  return { x: -q.x, y: -q.y, z: -q.z, w: q.w };
+}
+
+/** 쿼터니언 곱셈: a * b */
+function quatMultiply(
+  a: { x: number; y: number; z: number; w: number },
+  b: { x: number; y: number; z: number; w: number }
+) {
+  return {
+    x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+    y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+    z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+    w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+  };
+}
+
 const MobileController = () => {
   const [searchParams] = useSearchParams();
   const sessionCode = searchParams.get("code");
   const { sendRotation } = useMobileBroadcast(sessionCode);
   const [isActive, setIsActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [rotation, setRotation] = useState({ x: 0, y: 0, z: 0 });
+  const [displayQuat, setDisplayQuat] = useState({ x: 0, y: 0, z: 0, w: 1 });
 
-  const initRef = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
-  // alpha(0~360)만 연속 추적 필요
-  const prevAlpha = useRef<number | null>(null);
-  const contAlpha = useRef(0);
+  const initQuatRef = useRef<{ x: number; y: number; z: number; w: number } | null>(null);
 
   const handleOrientation = useCallback(
     (e: DeviceOrientationEvent) => {
       if (!sessionCode || !isActive) return;
 
       const alpha = e.alpha ?? 0;
-      const beta = e.beta ?? 0;   // -180 ~ 180, 연속
-      const gamma = e.gamma ?? 0; // -90 ~ 90, 연속
+      const beta = e.beta ?? 0;
+      const gamma = e.gamma ?? 0;
 
-      // alpha만 래핑 처리 (0→360 점프 방지)
-      if (prevAlpha.current !== null) {
-        let d = alpha - prevAlpha.current;
-        if (d > 180) d -= 360;
-        if (d < -180) d += 360;
-        contAlpha.current += d;
-      } else {
-        contAlpha.current = alpha;
-      }
-      prevAlpha.current = alpha;
+      const currentQuat = orientationToQuaternion(alpha, beta, gamma);
 
-      if (!initRef.current) {
-        initRef.current = { alpha: contAlpha.current, beta, gamma };
+      if (!initQuatRef.current) {
+        initQuatRef.current = currentQuat;
       }
 
-      const ref = initRef.current;
-      const x = (beta - ref.beta) * DEG2RAD;
-      const y = (gamma - ref.gamma) * DEG2RAD;
-      const z = (contAlpha.current - ref.alpha) * DEG2RAD;
+      // 상대 회전 = inverse(초기) * 현재
+      const relativeQuat = quatMultiply(quatConjugate(initQuatRef.current), currentQuat);
 
-      setRotation({ x, y, z });
-      sendRotation({ x, y, z });
+      setDisplayQuat(relativeQuat);
+      sendRotation(relativeQuat);
     },
     [sessionCode, isActive, sendRotation]
   );
@@ -73,9 +102,7 @@ const MobileController = () => {
   };
 
   const resetOrientation = () => {
-    initRef.current = null;
-    prevAlpha.current = null;
-    contAlpha.current = 0;
+    initQuatRef.current = null;
   };
 
   useEffect(() => {
@@ -121,10 +148,11 @@ const MobileController = () => {
           <div className="bg-primary/20 text-primary px-4 py-2 rounded-full text-sm font-medium">
             연결됨 — 폰을 움직여 보세요
           </div>
-          <div className="grid grid-cols-3 gap-3 text-xs text-muted-foreground font-mono">
-            <div>X: {rotation.x.toFixed(2)}</div>
-            <div>Y: {rotation.y.toFixed(2)}</div>
-            <div>Z: {rotation.z.toFixed(2)}</div>
+          <div className="grid grid-cols-4 gap-2 text-xs text-muted-foreground font-mono">
+            <div>x: {displayQuat.x.toFixed(2)}</div>
+            <div>y: {displayQuat.y.toFixed(2)}</div>
+            <div>z: {displayQuat.z.toFixed(2)}</div>
+            <div>w: {displayQuat.w.toFixed(2)}</div>
           </div>
           <Button variant="outline" onClick={resetOrientation}>
             원점 리셋

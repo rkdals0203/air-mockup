@@ -5,12 +5,13 @@ import PhonePlaceholder from "./PhonePlaceholder";
 
 interface PhoneCanvasProps {
   rotation: [number, number, number];
+  quaternion: { x: number; y: number; z: number; w: number } | null;
   imageUrl: string | null;
   isConnected: boolean;
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
 }
 
-const PhoneCanvas = ({ rotation, imageUrl, isConnected, canvasRef }: PhoneCanvasProps) => {
+const PhoneCanvas = ({ rotation, quaternion, imageUrl, isConnected, canvasRef }: PhoneCanvasProps) => {
   return (
     <div className="relative w-full h-full">
       {/* Premium gradient background */}
@@ -33,6 +34,7 @@ const PhoneCanvas = ({ rotation, imageUrl, isConnected, canvasRef }: PhoneCanvas
 
         <PhonePlaceholder
           rotation={rotation}
+          quaternion={quaternion}
           imageUrl={imageUrl}
           isConnected={isConnected}
         />

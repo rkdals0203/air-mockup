@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback } from "react";
 import Sidebar from "@/components/airmockup/Sidebar";
 import PhoneCanvas from "@/components/airmockup/PhoneCanvas";
 import { useSession } from "@/hooks/useSession";
@@ -8,9 +8,6 @@ const Index = () => {
   const [manualRotation, setManualRotation] = useState<[number, number, number]>([0, 0, 0]);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const { sessionCode, isConnected, remoteRotation } = useSession();
-
-  // Use remote rotation when connected, manual otherwise
-  const rotation = isConnected ? remoteRotation : manualRotation;
 
   const handleRotationChange = useCallback((axis: number, value: number) => {
     setManualRotation((prev) => {
@@ -36,13 +33,14 @@ const Index = () => {
         onImageUpload={setImageUrl}
         sessionCode={sessionCode}
         isConnected={isConnected}
-        rotation={rotation}
+        rotation={isConnected ? [0, 0, 0] : manualRotation}
         onRotationChange={handleRotationChange}
         onExport={handleExport}
       />
       <main className="flex-1 h-screen">
         <PhoneCanvas
-          rotation={rotation}
+          rotation={manualRotation}
+          quaternion={isConnected ? remoteRotation : null}
           imageUrl={imageUrl}
           isConnected={isConnected}
           canvasRef={canvasRef}
