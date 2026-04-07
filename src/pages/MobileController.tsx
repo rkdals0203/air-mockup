@@ -3,50 +3,19 @@ import { useSearchParams } from "react-router-dom";
 import { useMobileBroadcast } from "@/hooks/useSession";
 import { Smartphone, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import * as THREE from "three";
 
 const DEG2RAD = Math.PI / 180;
 
-/**
- * DeviceOrientation의 alpha/beta/gamma를 쿼터니언(x,y,z,w)으로 변환
- * W3C spec 기준: ZXY 순서 회전
- */
-function orientationToQuaternion(alpha: number, beta: number, gamma: number) {
-  const a = alpha * DEG2RAD;
-  const b = beta * DEG2RAD;
-  const g = gamma * DEG2RAD;
+// Three.js DeviceOrientationControls 기준 쿼터니언 변환
+// 디바이스 좌표계 → Three.js 좌표계
+const Q_SCREEN = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); // -90° around X
 
-  // ZXY 순서 오일러 → 쿼터니언
-  const cx = Math.cos(b / 2);
-  const sx = Math.sin(b / 2);
-  const cy = Math.cos(g / 2);
-  const sy = Math.sin(g / 2);
-  const cz = Math.cos(a / 2);
-  const sz = Math.sin(a / 2);
-
-  return {
-    x: sx * cy * cz - cx * sy * sz,
-    y: cx * sy * cz + sx * cy * sz,
-    z: cx * cy * sz + sx * sy * cz,
-    w: cx * cy * cz - sx * sy * sz,
-  };
-}
-
-/** 쿼터니언 켤레(역회전) */
-function quatConjugate(q: { x: number; y: number; z: number; w: number }) {
-  return { x: -q.x, y: -q.y, z: -q.z, w: q.w };
-}
-
-/** 쿼터니언 곱셈: a * b */
-function quatMultiply(
-  a: { x: number; y: number; z: number; w: number },
-  b: { x: number; y: number; z: number; w: number }
-) {
-  return {
-    x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
-    y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
-    z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
-    w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
-  };
+function deviceOrientationToQuat(alpha: number, beta: number, gamma: number): THREE.Quaternion {
+  const euler = new THREE.Euler(beta * DEG2RAD, alpha * DEG2RAD, -gamma * DEG2RAD, "YXZ");
+  const q = new THREE.Quaternion().setFromEuler(euler);
+  q.multiply(Q_SCREEN);
+  return q;
 }
 
 const MobileController = () => {
@@ -55,9 +24,9 @@ const MobileController = () => {
   const { sendRotation } = useMobileBroadcast(sessionCode);
   const [isActive, setIsActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [displayQuat, setDisplayQuat] = useState({ x: 0, y: 0, z: 0, w: 1 });
+  const [status, setStatus] = useState("");
 
-  const initQuatRef = useRef<{ x: number; y: number; z: number; w: number } | null>(null);
+  const initQuatInverse = useRef<THREE.Quaternion | null>(null);
 
   const handleOrientation = useCallback(
     (e: DeviceOrientationEvent) => {
@@ -67,17 +36,22 @@ const MobileController = () => {
       const beta = e.beta ?? 0;
       const gamma = e.gamma ?? 0;
 
-      const currentQuat = orientationToQuaternion(alpha, beta, gamma);
+      const currentQuat = deviceOrientationToQuat(alpha, beta, gamma);
 
-      if (!initQuatRef.current) {
-        initQuatRef.current = currentQuat;
+      if (!initQuatInverse.current) {
+        initQuatInverse.current = currentQuat.clone().invert();
       }
 
       // 상대 회전 = inverse(초기) * 현재
-      const relativeQuat = quatMultiply(quatConjugate(initQuatRef.current), currentQuat);
+      const relativeQuat = initQuatInverse.current.clone().multiply(currentQuat);
 
-      setDisplayQuat(relativeQuat);
-      sendRotation(relativeQuat);
+      setStatus(`${relativeQuat.x.toFixed(2)}, ${relativeQuat.y.toFixed(2)}, ${relativeQuat.z.toFixed(2)}`);
+      sendRotation({
+        x: relativeQuat.x,
+        y: relativeQuat.y,
+        z: relativeQuat.z,
+        w: relativeQuat.w,
+      });
     },
     [sessionCode, isActive, sendRotation]
   );
@@ -97,12 +71,12 @@ const MobileController = () => {
         return;
       }
     }
-    resetOrientation();
+    initQuatInverse.current = null;
     setIsActive(true);
   };
 
   const resetOrientation = () => {
-    initQuatRef.current = null;
+    initQuatInverse.current = null;
   };
 
   useEffect(() => {
@@ -148,12 +122,7 @@ const MobileController = () => {
           <div className="bg-primary/20 text-primary px-4 py-2 rounded-full text-sm font-medium">
             연결됨 — 폰을 움직여 보세요
           </div>
-          <div className="grid grid-cols-4 gap-2 text-xs text-muted-foreground font-mono">
-            <div>x: {displayQuat.x.toFixed(2)}</div>
-            <div>y: {displayQuat.y.toFixed(2)}</div>
-            <div>z: {displayQuat.z.toFixed(2)}</div>
-            <div>w: {displayQuat.w.toFixed(2)}</div>
-          </div>
+          <p className="text-xs text-muted-foreground font-mono">{status}</p>
           <Button variant="outline" onClick={resetOrientation}>
             원점 리셋
           </Button>
